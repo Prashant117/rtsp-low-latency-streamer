@@ -1,65 +1,301 @@
-import Image from "next/image";
+'use client'
+
+import { useMemo, useState } from "react";
+
+type ConnectionStatus =
+  | "idle"
+  | "validating"
+  | "testing"
+  | "ready"
+  | "error";
+
+type RtspTestResult = {
+  ok: boolean;
+  message?: string;
+  roundTripMs?: number;
+};
+
+const rtspSampleUrl =
+  "http://192.168.0.175:8080/video";
+
+function isValidStreamUrl(value: string) {
+  if (!value.trim()) return false;
+  try {
+    const url = new URL(value);
+    if (!url.hostname) return false;
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 export default function Home() {
+  const [rtspUrl, setRtspUrl] = useState("");
+  const [connectionStatus, setConnectionStatus] =
+    useState<ConnectionStatus>("idle");
+  const [connectionMessage, setConnectionMessage] = useState("");
+  const [connectionRtt, setConnectionRtt] = useState<number | undefined>(
+    undefined
+  );
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [key, setKey] = useState(0); // To force re-render of video element
+
+  const isRtspValid = useMemo(() => isValidStreamUrl(rtspUrl), [rtspUrl]);
+
+  async function handleTestConnection() {
+    if (!isRtspValid) return;
+    setConnectionStatus("testing");
+    setConnectionMessage("");
+    setConnectionRtt(undefined);
+    try {
+      const started = performance.now();
+      const response = await fetch("/api/rtsp/test", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ url: rtspUrl }),
+      });
+      const elapsed = performance.now() - started;
+      const data = (await response.json()) as RtspTestResult;
+      if (!response.ok || !data.ok) {
+        setConnectionStatus("error");
+        setConnectionMessage(
+          data.message || "Unable to connect to RTSP endpoint."
+        );
+        return;
+      }
+      setConnectionStatus("ready");
+      setConnectionMessage(
+        data.message || "RTSP endpoint is reachable."
+      );
+      setConnectionRtt(data.roundTripMs ?? Math.round(elapsed));
+    } catch {
+      setConnectionStatus("error");
+      setConnectionMessage("Network error while testing connection.");
+    }
+  }
+
+  function handleStartStream() {
+    if (!isRtspValid) return;
+    setIsPlaying(true);
+    setKey(prev => prev + 1); // Force video reload
+  }
+
+  function handleStopStream() {
+    setIsPlaying(false);
+    setKey(prev => prev + 1);
+  }
+
+  function handleUseSampleRtsp() {
+    setRtspUrl(rtspSampleUrl);
+  }
+
+  const outputUrl = isPlaying
+    ? `/api/stream?url=${encodeURIComponent(rtspUrl)}`
+    : "";
+
   return (
-    <div className="flex min-h-screen items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex min-h-screen w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
-        </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
+    <main
+      style={{
+        minHeight: "100vh",
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        padding: "2rem 1rem 3rem",
+        gap: "2rem",
+        boxSizing: "border-box",
+      }}
+    >
+      <section
+        style={{
+          width: "100%",
+          maxWidth: 900,
+          display: "flex",
+          flexDirection: "column",
+          gap: "1.5rem",
+          borderRadius: 12,
+          padding: "1.5rem",
+          border: "1px solid rgba(0,0,0,0.1)",
+          backgroundColor: "rgba(255,255,255,0.02)",
+        }}
+      >
+        <h1
+          style={{
+            fontSize: "1.75rem",
+            fontWeight: 600,
+          }}
+        >
+          Camera Streaming
+        </h1>
+
+        <div
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            gap: "0.75rem",
+          }}
+        >
+          <label
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              gap: "0.4rem",
+              fontSize: "0.95rem",
+            }}
           >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
+            <span>Camera stream URL</span>
+            <input
+              type="text"
+              placeholder="rtsp://host:554/path"
+              value={rtspUrl}
+              onChange={(event) => setRtspUrl(event.target.value)}
+              style={{
+                padding: "0.6rem 0.75rem",
+                borderRadius: 8,
+                border: "1px solid #d1d5db",
+                fontSize: "0.95rem",
+                fontFamily: "inherit",
+              }}
             />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
+          </label>
+          <div
+            style={{
+              display: "flex",
+              flexWrap: "wrap",
+              gap: "0.5rem",
+              alignItems: "center",
+            }}
           >
-            Documentation
-          </a>
+            <button
+              onClick={handleTestConnection}
+              disabled={!isRtspValid}
+              style={{
+                padding: "0.5rem 0.9rem",
+                borderRadius: 999,
+                border: "none",
+                fontSize: "0.9rem",
+                cursor: !isRtspValid ? "not-allowed" : "pointer",
+                backgroundColor: !isRtspValid ? "#9ca3af" : "#2563eb",
+                color: "#fff",
+              }}
+            >
+              Test connection
+            </button>
+            {!isPlaying ? (
+              <button
+                onClick={handleStartStream}
+                disabled={!isRtspValid}
+                style={{
+                  padding: "0.5rem 0.9rem",
+                  borderRadius: 999,
+                  border: "none",
+                  fontSize: "0.9rem",
+                  cursor: !isRtspValid ? "not-allowed" : "pointer",
+                  backgroundColor: !isRtspValid ? "#9ca3af" : "#16a34a",
+                  color: "#fff",
+                }}
+              >
+                Start stream
+              </button>
+            ) : (
+                <button
+                onClick={handleStopStream}
+                style={{
+                  padding: "0.5rem 0.9rem",
+                  borderRadius: 999,
+                  border: "none",
+                  fontSize: "0.9rem",
+                  cursor: "pointer",
+                  backgroundColor: "#dc2626",
+                  color: "#fff",
+                }}
+              >
+                Stop stream
+              </button>
+            )}
+            <button
+              onClick={handleUseSampleRtsp}
+              style={{
+                padding: "0.45rem 0.8rem",
+                borderRadius: 999,
+                border: "1px solid #d1d5db",
+                fontSize: "0.85rem",
+                cursor: "pointer",
+                backgroundColor: "transparent",
+              }}
+            >
+              Use sample RTSP URL
+            </button>
+          </div>
+          <div
+            style={{
+              display: "flex",
+              flexWrap: "wrap",
+              gap: "0.75rem",
+              alignItems: "center",
+              fontSize: "0.85rem",
+            }}
+          >
+            <div>
+              <strong>Status:</strong> {connectionStatus === "ready" ? "Reachable" : connectionStatus}
+            </div>
+            {connectionRtt !== undefined && (
+              <div>
+                <strong>RTT:</strong> {connectionRtt} ms
+              </div>
+            )}
+            {connectionMessage && (
+                <div style={{ color: connectionStatus === "error" ? "#dc2626" : "green" }}>
+                    {connectionMessage}
+                </div>
+            )}
+          </div>
         </div>
-      </main>
-    </div>
+      </section>
+
+      <section
+        style={{
+          width: "100%",
+          maxWidth: 900,
+          display: "flex",
+          flexDirection: "column",
+          gap: "1rem",
+          borderRadius: 12,
+          padding: "1.5rem",
+          border: "1px solid rgba(0,0,0,0.1)",
+          backgroundColor: "#000",
+          color: "#fff",
+        }}
+      >
+        <div style={{ position: "relative", width: "100%", aspectRatio: "16/9" }}>
+            {isPlaying ? (
+              <video
+                key={key}
+                src={outputUrl}
+                autoPlay
+                muted
+                playsInline
+                controls
+                style={{ width: "100%", height: "100%" }}
+              />
+            ) : (
+                <div
+                    style={{
+                        width: "100%",
+                        height: "100%",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        color: "#9ca3af",
+                        background: "rgba(255,255,255,0.1)"
+                    }}
+                >
+                    Ready to stream
+                </div>
+            )}
+        </div>
+      </section>
+    </main>
   );
 }
