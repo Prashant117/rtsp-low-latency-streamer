@@ -1,6 +1,6 @@
-'use client'
+'use client';
 
-import { useMemo, useState, useEffect } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 type ConnectionStatus =
   | "idle"
@@ -16,7 +16,7 @@ type RtspTestResult = {
 };
 
 const rtspSampleUrl =
-  "http://192.168.0.175:8080/video";
+  "http://192.168.1.7:8080/video";
 
 function isValidStreamUrl(value: string) {
   if (!value.trim()) return false;
@@ -29,10 +29,198 @@ function isValidStreamUrl(value: string) {
   }
 }
 
+/**
+ * A specialized Low-Latency Player using Media Source Extensions (MSE).
+ * This component fetches fragmented MP4 chunks from the /api/stream endpoint
+ * and appends them to a Media Source buffer for real-time playback.
+ */
+function LowLatencyPlayer({ url }: { url: string }) {
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const mediaSourceRef = useRef<MediaSource | null>(null);
+  const sourceBufferRef = useRef<SourceBuffer | null>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  // Buffer Pruning & Latency Synchronization
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+
+    const syncInterval = setInterval(() => {
+      if (video.buffered.length > 0) {
+        const bufferedEnd = video.buffered.end(video.buffered.length - 1);
+        const lag = bufferedEnd - video.currentTime;
+        
+        // Aggressive sync: If lag > 0.5s, hard-jump to live edge
+        if (lag > 0.5) {
+          video.currentTime = bufferedEnd - 0.05;
+          video.playbackRate = 1.0;
+        } 
+        // Subtle catch-up: If lag > 0.2s, speed up slightly
+        else if (lag > 0.2) {
+          video.playbackRate = 1.1;
+        } 
+        // Normal speed
+        else {
+          video.playbackRate = 1.0;
+        }
+
+        // Keep the video playing if it gets stuck
+        if (video.paused && !video.ended && video.readyState >= 2) {
+            video.play().catch(() => {});
+        }
+      }
+    }, 200); // Check every 200ms for ultra-responsiveness
+
+    const pruningInterval = setInterval(() => {
+        const sb = sourceBufferRef.current;
+        if (sb && !sb.updating && video.buffered.length > 0) {
+            const start = video.buffered.start(0);
+            const end = video.currentTime - 10; // Keep last 10 seconds
+            if (end > start) {
+                try {
+                    sb.remove(start, end);
+                } catch {
+                }
+            }
+        }
+    }, 30000); // Prune every 30 seconds
+
+    return () => {
+      clearInterval(syncInterval);
+      clearInterval(pruningInterval);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!url || !videoRef.current) return;
+
+    const video = videoRef.current;
+    mediaSourceRef.current = new MediaSource();
+    video.src = URL.createObjectURL(mediaSourceRef.current);
+
+    const onSourceOpen = async () => {
+      URL.revokeObjectURL(video.src);
+      
+      const mimeType = 'video/mp4; codecs="avc1.42E01E"';
+      if (!MediaSource.isTypeSupported(mimeType)) {
+        setError("Browser does not support the required video codec.");
+        return;
+      }
+
+      const ms = mediaSourceRef.current!;
+      const sb = ms.addSourceBuffer(mimeType);
+      sourceBufferRef.current = sb;
+
+      const queue: Uint8Array[] = [];
+      sb.addEventListener('updateend', () => {
+        if (queue.length > 0 && !sb.updating) {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          sb.appendBuffer(queue.shift()! as any);
+        }
+      });
+
+      abortControllerRef.current = new AbortController();
+      try {
+        const response = await fetch(url, {
+          signal: abortControllerRef.current.signal,
+        });
+
+        if (!response.body) throw new Error("ReadableStream not supported");
+        const reader = response.body.getReader();
+        
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          if (sb.updating || queue.length > 0) {
+            queue.push(value);
+          } else {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            sb.appendBuffer(value as any);
+          }
+        }
+      } catch (err) {
+        if (err instanceof Error && err.name !== 'AbortError') {
+          console.error("Stream fetch error:", err);
+          setError("Failed to fetch video stream.");
+        }
+      }
+    };
+
+    mediaSourceRef.current.addEventListener('sourceopen', onSourceOpen);
+
+    return () => {
+      if (abortControllerRef.current) abortControllerRef.current.abort();
+      if (mediaSourceRef.current && mediaSourceRef.current.readyState === 'open') {
+        mediaSourceRef.current.removeEventListener('sourceopen', onSourceOpen);
+        if (sourceBufferRef.current) {
+          try {
+            mediaSourceRef.current.removeSourceBuffer(sourceBufferRef.current);
+          } catch {}
+        }
+        mediaSourceRef.current.endOfStream();
+      }
+      if (video.src) {
+        URL.revokeObjectURL(video.src);
+        video.src = "";
+      }
+    };
+  }, [url]);
+
+  return (
+    <div style={{ width: "100%", height: "100%", position: "relative" }}>
+      {error && (
+        <div style={{
+          position: "absolute",
+          inset: 0,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          backgroundColor: "rgba(0,0,0,0.8)",
+          color: "#ef4444",
+          zIndex: 10,
+          padding: "1rem",
+          textAlign: "center"
+        }}>
+          {error}
+        </div>
+      )}
+      <video
+        ref={videoRef}
+        autoPlay
+        muted
+        playsInline
+        controls
+        style={{ width: "100%", height: "100%", objectFit: "contain" }}
+      />
+    </div>
+  );
+}
+
 export default function Home() {
-  const [rtspUrl, setRtspUrl] = useState("");
+  const [rtspUrl, setRtspUrl] = useState(() => {
+    if (typeof window === "undefined") return "";
+    const saved = window.localStorage.getItem("rtsp_cameras");
+    if (!saved) return "";
+    try {
+      const parsed = JSON.parse(saved) as string[];
+      return parsed.length > 0 ? parsed[0] : "";
+    } catch {
+      return "";
+    }
+  });
   const [newCameraUrl, setNewCameraUrl] = useState("");
-  const [cameras, setCameras] = useState<string[]>([]);
+  const [cameras, setCameras] = useState<string[]>(() => {
+    if (typeof window === "undefined") return [];
+    const saved = window.localStorage.getItem("rtsp_cameras");
+    if (!saved) return [];
+    try {
+      return JSON.parse(saved) as string[];
+    } catch {
+      return [];
+    }
+  });
   const [connectionStatus, setConnectionStatus] =
     useState<ConnectionStatus>("idle");
   const [connectionMessage, setConnectionMessage] = useState("");
@@ -41,27 +229,8 @@ export default function Home() {
   );
   const [isPlaying, setIsPlaying] = useState(false);
   const [key, setKey] = useState(0); // To force re-render of video element
-  const [isLoaded, setIsLoaded] = useState(false); // Flag to prevent saving empty initial state
 
-  // Load cameras from localStorage on mount
-  useEffect(() => {
-    const savedCameras = localStorage.getItem("rtsp_cameras");
-    if (savedCameras) {
-      try {
-        setCameras(JSON.parse(savedCameras));
-      } catch (e) {
-        console.error("Failed to parse saved cameras", e);
-      }
-    }
-    setIsLoaded(true);
-  }, []);
-
-  // Save cameras to localStorage whenever they change
-  useEffect(() => {
-      if (isLoaded) {
-          localStorage.setItem("rtsp_cameras", JSON.stringify(cameras));
-      }
-  }, [cameras, isLoaded]);
+  // Removed useEffect for loading from localStorage as it's now in initializers
 
   const isRtspValid = useMemo(() => isValidStreamUrl(rtspUrl), [rtspUrl]);
 
@@ -112,20 +281,28 @@ export default function Home() {
 
   function handleUseSampleRtsp() {
     if (!cameras.includes(rtspSampleUrl)) {
-        setCameras(prev => [...prev, rtspSampleUrl]);
+      const next = [...cameras, rtspSampleUrl];
+      setCameras(next);
+      if (typeof window !== "undefined") {
+        window.localStorage.setItem("rtsp_cameras", JSON.stringify(next));
+      }
     }
     setRtspUrl(rtspSampleUrl);
   }
 
   function handleAddCamera() {
-      if (!isValidStreamUrl(newCameraUrl)) return;
-      if (!cameras.includes(newCameraUrl)) {
-          setCameras(prev => [...prev, newCameraUrl]);
-          if (!rtspUrl) {
-              setRtspUrl(newCameraUrl);
-          }
+    if (!isValidStreamUrl(newCameraUrl)) return;
+    if (!cameras.includes(newCameraUrl)) {
+      const next = [...cameras, newCameraUrl];
+      setCameras(next);
+      if (!rtspUrl) {
+        setRtspUrl(newCameraUrl);
       }
-      setNewCameraUrl("");
+      if (typeof window !== "undefined") {
+        window.localStorage.setItem("rtsp_cameras", JSON.stringify(next));
+      }
+    }
+    setNewCameraUrl("");
   }
 
   const outputUrl = isPlaying
@@ -221,8 +398,8 @@ export default function Home() {
                   outline: "none",
                   transition: "all 0.2s",
                 }}
-                onFocus={(e) => (e.target.style.borderColor = "#60a5fa")}
-                onBlur={(e) => (e.target.style.borderColor = "rgba(255,255,255,0.1)")}
+                onFocus={(e) => { e.target.style.borderColor = "#60a5fa" }}
+                onBlur={(e) => { e.target.style.borderColor = "rgba(255,255,255,0.1)" }}
               />
               <button
                 onClick={handleAddCamera}
@@ -406,15 +583,7 @@ export default function Home() {
       >
         <div style={{ position: "relative", width: "100%", aspectRatio: "16/9" }}>
             {isPlaying ? (
-              <video
-                key={key}
-                src={outputUrl}
-                autoPlay
-                muted
-                playsInline
-                controls
-                style={{ width: "100%", height: "100%", display: "block" }}
-              />
+              <LowLatencyPlayer key={key} url={outputUrl} />
             ) : (
                 <div
                     style={{

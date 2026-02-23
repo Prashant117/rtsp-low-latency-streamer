@@ -67,7 +67,7 @@ function testTcpConnection(host: string, port: number, timeoutMs: number) {
         done({
           ok: true,
           roundTripMs: Date.now() - started,
-          message: "TCP port is reachable for the stream endpoint.",
+          message: "Port is reachable for the stream endpoint.",
         });
       });
 
