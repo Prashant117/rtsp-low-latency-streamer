@@ -15,9 +15,6 @@ type RtspTestResult = {
   roundTripMs?: number;
 };
 
-const rtspSampleUrl =
-  "http://192.168.1.7:8080/video";
-
 function isValidStreamUrl(value: string) {
   if (!value.trim()) return false;
   try {
@@ -279,16 +276,7 @@ export default function Home() {
     setKey(prev => prev + 1);
   }
 
-  function handleUseSampleRtsp() {
-    if (!cameras.includes(rtspSampleUrl)) {
-      const next = [...cameras, rtspSampleUrl];
-      setCameras(next);
-      if (typeof window !== "undefined") {
-        window.localStorage.setItem("rtsp_cameras", JSON.stringify(next));
-      }
-    }
-    setRtspUrl(rtspSampleUrl);
-  }
+
 
   function handleAddCamera() {
     if (!isValidStreamUrl(newCameraUrl)) return;
@@ -529,23 +517,7 @@ export default function Home() {
                 Stop Stream
               </button>
             )}
-            <button
-              onClick={handleUseSampleRtsp}
-              style={{
-                padding: "0.6rem 1.25rem",
-                borderRadius: 99,
-                border: "none",
-                fontSize: "0.9rem",
-                cursor: "pointer",
-                backgroundColor: "rgba(255, 255, 255, 0.05)",
-                color: "#94a3b8",
-                transition: "all 0.2s",
-              }}
-              onMouseEnter={(e) => (e.currentTarget.style.color = "#e2e8f0")}
-              onMouseLeave={(e) => (e.currentTarget.style.color = "#94a3b8")}
-            >
-              Load Sample Camera
-            </button>
+
           </div>
           
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginTop: "0.5rem", padding: "1rem", backgroundColor: "rgba(0,0,0,0.2)", borderRadius: 12 }}>

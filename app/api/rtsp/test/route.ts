@@ -71,14 +71,31 @@ function testTcpConnection(host: string, port: number, timeoutMs: number) {
         });
       });
 
-      socket.once("error", (error) => {
+      socket.once("error", (error: Error & { code?: string }) => {
         clearTimeout(timeout);
+        let humanMessage = "Unable to connect to the camera.";
+        
+        if (error?.code === "ECONNREFUSED") {
+          humanMessage = "Connection refused. Please check if the camera IP and port are correct and the device is online.";
+        } else if (error?.code === "ETIMEDOUT") {
+          humanMessage = "Connection timed out. The camera might be offline or unreachable.";
+        } else if (error?.code === "EHOSTDOWN") {
+          humanMessage = "The camera device is powered off or disconnected from the network.";
+        } else if (error?.code === "ENETUNREACH") {
+          humanMessage = "Network unreachable. Please check your internet or local network connection.";
+        } else if (error?.code === "EHOSTUNREACH") {
+          humanMessage = "Device unreachable. The camera IP address might be incorrect or the device is powered off.";
+        } else if (error?.code === "ECONNRESET") {
+          humanMessage = "The connection was abruptly closed by the camera. Please try again.";
+        } else if (error?.code === "EADDRNOTAVAIL") {
+          humanMessage = "Invalid camera address or network configuration.";
+        } else if (error?.message) {
+          humanMessage = `Connection error: ${error.message}`;
+        }
+
         done({
           ok: false,
-          message:
-            error && typeof error.message === "string"
-              ? error.message
-              : "Error while connecting to RTSP endpoint.",
+          message: humanMessage,
         });
       });
     }
